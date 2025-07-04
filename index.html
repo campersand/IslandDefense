@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Island Defense</title>
+  <style>
+    html, body {
+      margin: 0;
+      overflow: hidden;
+      font-family: sans-serif;
+    }
+
+    #gameCanvas {
+      display: block;
+      background: #4fa1cc;
+    }
+
+    #topUI, #selectionIndicator {
+      position: absolute;
+      top: 10px;
+      background: rgba(0,0,0,0.7);
+      color: white;
+      padding: 10px 12px;
+      border-radius: 8px;
+      z-index: 3;
+      user-select: none;
+      font-size: 16px;
+    }
+
+    #topUI {
+      left: 10px;
+    }
+
+    #selectionIndicator {
+      right: 10px;
+    }
+
+    #shopButton {
+      margin-top: 6px;
+      padding: 6px 12px;
+      background: white;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+    }
+
+    #shopPanel {
+      position: absolute;
+      top: 100px;
+      left: 50px;
+      background: rgba(0, 0, 0, 0.85);
+      color: white;
+      padding: 10px;
+      border-radius: 8px;
+      display: none;
+      flex-direction: column;
+      gap: 8px;
+      z-index: 10;
+    }
+
+    #shopPanel button {
+      padding: 6px 10px;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+    }
+
+    #shopPanel .close-btn {
+      background: red;
+      color: white;
+      font-weight: bold;
+      align-self: flex-end;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="topUI">
+    🪙 Coins: <span id="coinCount">0</span> / <span id="maxCoinCount">300</span> |
+    📅 Day: <span id="dayCount">1</span><br />
+    <button id="shopButton">🛍 Shop</button>
+    <div id="intermissionMessage" style="color: yellow; font-size: 14px;"></div>
+  </div>
+
+  <div id="selectionIndicator">
+    🧱 Selected: <span id="currentSelection">None</span>
+  </div>
+
+  <div id="shopPanel">
+    <button class="close-btn" onclick="hideShop()">❌</button>
+    <button onclick="toggleExpand()">🔲 Expand Island (50🪙)</button>
+    <button onclick="placeBuilding('bank')">🏦 Bank (120🪙)</button>
+    <button onclick="placeBuilding('cannon')">🔫 Cannon (100🪙)</button>
+    <button onclick="placeBuilding('shotnnon')">🚿 Shotnnon (150🪙)</button>
+    <button onclick="placeBuilding('watchtower')">🗼 Watchtower (200🪙)</button>
+    <button onclick="placeBuilding('goldmine')">⛏ Gold Mine (100🪙)</button>
+    <button onclick="placeBuilding('mortar')">🍷 Mortar (200🪙)</button>
+    <button onclick="resetGame()">Reset Game</button>
+  </div>
+
+  <canvas id="gameCanvas"></canvas>
+
+  <!-- Sound assets -->
+  <audio id="sfxShoot" src="https://www.epidemicsound.com/sound-effects/tracks/9512db7b-0c40-408c-97be-2a3eba22045c/"></audio>
+  <audio id="sfxHit" src="https://cdn.jsdelivr.net/gh/joshwcomeau/sonics@main/sounds/hit.mp3"></audio>
+  <audio id="sfxCoin" src="https://cdn.jsdelivr.net/gh/joshwcomeau/sonics@main/sounds/coin.mp3"></audio>
+  <audio id="sfxExplosion" src="https://cdn.jsdelivr.net/gh/joshwcomeau/sonics@main/sounds/explosion.mp3"></audio>
+
+  <script>
+    // MOBILE DRAG FOR SHOP PANEL
+    const shopPanel = document.getElementById('shopPanel');
+    let isDragging = false, dragOffsetX = 0, dragOffsetY = 0;
+
+    function startDrag(e) {
+      if (e.target.classList.contains('close-btn')) return;
+      isDragging = true;
+      const pointer = e.touches ? e.touches[0] : e;
+      dragOffsetX = pointer.clientX - shopPanel.offsetLeft;
+      dragOffsetY = pointer.clientY - shopPanel.offsetTop;
+    }
+
+    function doDrag(e) {
+      if (!isDragging) return;
+      const pointer = e.touches ? e.touches[0] : e;
+      shopPanel.style.left = pointer.clientX - dragOffsetX + 'px';
+      shopPanel.style.top = pointer.clientY - dragOffsetY + 'px';
+    }
+
+    function stopDrag() {
+      isDragging = false;
+    }
+
+    shopPanel.addEventListener('mousedown', startDrag);
+    shopPanel.addEventListener('touchstart', startDrag, { passive: true });
+    document.addEventListener('mousemove', doDrag);
+    document.addEventListener('touchmove', doDrag, { passive: true });
+    document.addEventListener('mouseup', stopDrag);
+    document.addEventListener('touchend', stopDrag);
+
+    // SHOP TOGGLE
+    const shopBtn = document.getElementById("shopButton");
+    shopBtn.addEventListener("click", () => {
+      shopPanel.style.display = "flex";
+    });
+
+    function hideShop() {
+      shopPanel.style.display = "none";
+    }
+
+    function updateSelectionLabel() {
+      document.getElementById("currentSelection").textContent =
+        expandMode ? 'Expand Mode' :
+        placing ? placing.charAt(0).toUpperCase() + placing.slice(1) :
+        'None';
+    }
+  </script>
+  <script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    canvas.width = innerWidth;
+    canvas.height = innerHeight;
+
+    const tileSize = 50;
+    let tiles = [{ x: 0, y: 0 }];
+    let buildings = [];
+    let zombies = [];
+    let projectiles = [];
+    let bombs = [];
+    let coins = 180;
+    let maxCoins = 300;
+    let day = 1;
+    let placing = null;
+    let expandMode = false;
+    let zoomLevel = 1;
+    let damageIndicators = [];
+
+    const generator = { x: 0, y: 0, hp: 200, maxHp: 200 };
+
+    const DAY_DURATION = 60000;
+    let zombieQueue = [];
+    let spawnCooldown = 0;
+    let intermission = false;
+    let intermissionTimer = 0;
+
+    function toggleExpand() {
+      placing = null;
+      expandMode = !expandMode;
+      updateSelectionLabel();
+    }
+
+    function placeBuilding(type) {
+      placing = type;
+      expandMode = false;
+      updateSelectionLabel();
+    }
+
+    function resetGame() {
+      localStorage.removeItem('islandDefenseSave');
+      location.reload();
+    }
+
+    function saveGame() {
+      localStorage.setItem('islandDefenseSave', JSON.stringify({
+  tiles, buildings, coins, day, generator, maxCoins
+}));
+
+    }
+
+    function loadGame() {
+      const save = JSON.parse(localStorage.getItem('islandDefenseSave'));
+      if (save) {
+        tiles = save.tiles;
+        buildings = save.buildings.map(b => ({ ...b, timer: 0 }));
+        coins = save.coins;
+        day = save.day;
+        if (save.maxCoins !== undefined) maxCoins = save.maxCoins;
+        Object.assign(generator, save.generator);
+      }
+    }
+
+    canvas.addEventListener('click', (e) => {
+      const x = Math.floor((e.clientX - canvas.width / 2) / tileSize / zoomLevel);
+      const y = Math.floor((e.clientY - canvas.height / 2) / tileSize / zoomLevel);
+
+      if (expandMode) {
+        const isAdjacent = tiles.some(t => Math.abs(t.x - x) + Math.abs(t.y - y) === 1);
+        if (!tiles.some(t => t.x === x && t.y === y) && isAdjacent && coins >= 50) {
+          tiles.push({ x, y });
+          coins -= 50;
+          saveGame();
+        }
+        return;
+      }
+
+      if (placing && tiles.some(t => t.x === x && t.y === y) &&
+          !buildings.some(b => b.x === x && b.y === y) && (x !== 0 || y !== 0)) {
+const cost = {
+  cannon: 100,
+  shotnnon: 150,
+  watchtower: 200,
+  goldmine: 100,
+  mortar: 200,
+  bank: 120
+}[placing];
+        if (coins < cost) return;
+
+        buildings.push({
+          x, y, type: placing, hp: 100, maxHp: 100, timer: 0
+        });
+
+        if (placing === 'watchtower') zoomLevel = Math.max(0.5, zoomLevel - 0.1);
+        coins -= cost;
+        placing = null;
+        updateSelectionLabel();
+        saveGame();
+      }
+    });
+
+    function playSound(id) {
+      const sound = document.getElementById(id);
+      if (sound) {
+        sound.currentTime = 0;
+        sound.play().catch(() => {});
+      }
+    }
+  </script>
+<script>
+  function queueZombiesForDay(d) {
+    zombieQueue = [];
+    const baseCount = 3 + d * 2;
+
+    for (let i = 0; i < baseCount; i++) {
+      const rand = Math.random();
+      if (rand < 0.2 && d >= 3) {
+        zombieQueue.push({ type: 'runner', hp: Math.floor(170 * Math.pow(1.1, day)), maxHp:  Math.floor(170 * Math.pow(1.1, day)), speed: 0.7, lastAttack: 0, shake: 0 });
+      } else if (rand < 0.4 && d >= 5) {
+        zombieQueue.push({ type: 'boat', hp:  Math.floor(375 * Math.pow(1.1, day)), maxHp:  Math.floor(450 * Math.pow(1.1, day)), speed: 0.1, lastAttack: 0, shake: 0 });
+      } else {
+       // Exponential-ish curve with caps
+const hp = Math.floor(250 * Math.pow(1.1, day)); // grows ~10% per day
+const speed = Math.min(0.15 + 0.02 * day, 1.2);  // grows steadily up to 1.2
+
+        zombieQueue.push({ type: 'normal', hp, maxHp: hp, speed, lastAttack: 0, shake: 0 });
+      }
+    }
+
+    if (d % 7 === 0) {
+      zombieQueue.push({
+        type: 'boss',
+        hp: 6000,
+        maxHp: 6000,
+        speed: 0.15,
+        lastAttack: 0,
+        shake: 0
+      });
+    }
+  }
+
+  function spawnZombieFromQueue() {
+    const angle = Math.random() * Math.PI * 2;
+    const entry = zombieQueue.shift();
+    zombies.push({
+      x: Math.cos(angle) * 400,
+      y: Math.sin(angle) * 400,
+      ...entry
+    });
+  }
+
+  function drawEmojiWithHp(emoji, x, y, hp, maxHp, shake = 0) {
+    ctx.font = '24px serif';
+    ctx.textAlign = 'center';
+    if (shake > 0) x += (Math.random() - 0.5) * 4;
+    ctx.fillText(emoji, x, y + 8);
+    drawHealthBar(x, y, hp, maxHp);
+  }
+
+  function drawHealthBar(x, y, hp, maxHp) {
+    ctx.fillStyle = 'black';
+    ctx.fillRect(x - 15, y - 20, 30, 5);
+    ctx.fillStyle = 'red';
+    ctx.fillRect(x - 15, y - 20, 30 * (hp / maxHp), 5);
+  }
+
+  function drawTile(x, y) {
+    ctx.fillStyle = '#e1d199';
+    ctx.fillRect(x * tileSize, y * tileSize, tileSize, tileSize);
+    ctx.strokeStyle = '#999';
+    ctx.strokeRect(x * tileSize, y * tileSize, tileSize, tileSize);
+  }
+
+  function drawDamageText() {
+    for (let i = damageIndicators.length - 1; i >= 0; i--) {
+      const d = damageIndicators[i];
+      ctx.fillStyle = d.type === 'coin' ? 'gold' : 'red';
+      ctx.fillText(d.text, d.x, d.y);
+      d.y -= 1;
+      d.life--;
+      if (d.life <= 0) damageIndicators.splice(i, 1);
+    }
+  }
+
+  function shootProjectiles() {
+    for (let b of buildings) {
+      const bx = b.x * tileSize + 25;
+      const by = b.y * tileSize + 25;
+      b.timer++;
+
+      const fire = (emoji, angle, speed) =>
+        projectiles.push({ x: bx, y: by, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed, emoji });
+
+      if (b.type === 'cannon' && b.timer >= 30) {
+        const z = zombies.find(z => Math.hypot(z.x - bx, z.y - by) < 200);
+        if (z) {
+          fire('💥', Math.atan2(z.y - by, z.x - bx), 4);
+          b.timer = 0;
+          playSound('sfxShoot');
+        }
+      }
+
+      if (b.type === 'shotnnon' && b.timer >= 60) {
+        const z = zombies.find(z => Math.hypot(z.x - bx, z.y - by) < 150);
+        if (z) {
+          const baseAngle = Math.atan2(z.y - by, z.x - bx);
+          for (let i = -2; i <= 2; i++) {
+            const angle = baseAngle + i * 0.2;
+            fire('🔸', angle, 4);
+          }
+          b.timer = 0;
+          playSound('sfxShoot');
+        }
+      }
+
+      if (b.type === 'mortar' && b.timer >= 300) {
+        const z = zombies.find(z => Math.hypot(z.x - bx, z.y - by) < 300);
+        if (z) {
+          bombs.push({ x: bx, y: by, vx: (z.x - bx) * 0.025, vy: (z.y - by) * 0.025, target: z });
+          b.timer = 0;
+          playSound('sfxShoot');
+        }
+      }
+
+      if (b.type === 'goldmine' && b.timer >= 300) {
+        coins += 8;
+        damageIndicators.push({ text: '🪙+8', x: bx, y: by, life: 30, type: 'coin' });
+        b.timer = 0;
+        playSound('sfxCoin');
+      }
+    }
+  }
+
+  function updateProjectiles() {
+    for (let i = projectiles.length - 1; i >= 0; i--) {
+      const p = projectiles[i];
+      p.x += p.vx;
+      p.y += p.vy;
+      ctx.font = '20px serif';
+      ctx.fillText(p.emoji, p.x, p.y);
+
+      for (let z of zombies) {
+        if (Math.hypot(z.x - p.x, z.y - p.y) < 15 && (!p.ignore || p.ignore !== z)) {
+          z.hp -= p.damage || 30;
+          z.shake = 15;
+          playSound('sfxHit');
+          damageIndicators.push({ text: '🩸-30', x: z.x, y: z.y, life: 30, type: 'hit' });
+          projectiles.splice(i, 1);
+          if (z.hp <= 0) {
+            if (z.type === 'boat') {
+              for (let j = 0; j < 3; j++) {
+                zombies.push({
+                  x: z.x + (Math.random() - 0.5) * 30,
+                  y: z.y + (Math.random() - 0.5) * 30,
+                  type: 'normal',
+                  hp:  Math.floor(250 * Math.pow(1.1, day)), maxHp:  Math.floor(250 * Math.pow(1.1, day)), speed: 0.25, lastAttack: 0, shake: 0
+                });
+              }
+            }
+            coins += 10;
+            damageIndicators.push({ text: '🪙+10', x: z.x, y: z.y, life: 30, type: 'coin' });
+            playSound('sfxCoin');
+          }
+          break;
+        }
+      }
+    }
+
+    for (let i = bombs.length - 1; i >= 0; i--) {
+      const b = bombs[i];
+      b.x += b.vx;
+      b.y += b.vy;
+      ctx.fillText('💣', b.x, b.y);
+      if (Math.hypot(b.target.x - b.x, b.target.y - b.y) < 15) {
+        for (let angle = 0; angle < Math.PI * 2; angle += Math.PI / 16) {
+          projectiles.push({
+            x: b.x,
+            y: b.y,
+            vx: Math.cos(angle) * 3.5,
+            vy: Math.sin(angle) * 3.5,
+            emoji: '🔹',
+            damage: 10,
+            ignore: b.target
+          });
+        }
+        bombs.splice(i, 1);
+        playSound('sfxExplosion');
+      }
+    }
+  }
+
+  let waveOffset = 0;
+  function drawOceanBackground() {
+    ctx.fillStyle = '#4fa1cc';
+    ctx.fillRect(-canvas.width, -canvas.height, canvas.width * 2, canvas.height * 2);
+    ctx.strokeStyle = '#6ecbe1';
+    ctx.lineWidth = 2;
+    for (let y = -canvas.height; y < canvas.height; y += 50) {
+      ctx.beginPath();
+      for (let x = -canvas.width; x < canvas.width; x++) {
+        const wave = Math.sin((x + waveOffset) / 100) * 10;
+        const px = x;
+        const py = y + wave;
+        if (x === -canvas.width) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.stroke();
+    }
+    waveOffset += 1.5;
+  }
+
+  function gameLoop() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.save();
+    ctx.translate(canvas.width / 2, canvas.height / 2);
+    ctx.scale(zoomLevel, zoomLevel);
+    drawOceanBackground();
+
+    tiles.forEach(t => drawTile(t.x, t.y));
+    buildings.forEach(b => {
+      drawEmojiWithHp({ cannon: '🔫', shotnnon: '🚿', goldmine: '⛏', watchtower: '🗼', mortar: '🍷' }[b.type], b.x * tileSize + 25, b.y * tileSize + 25, b.hp, b.maxHp);
+    });
+
+    drawEmojiWithHp('⚡', generator.x * tileSize + 25, generator.y * tileSize + 25, generator.hp, generator.maxHp);
+    zombies.forEach(z => {
+      const emoji = z.type === 'boss' ? '👹' : z.type === 'runner' ? '🏃‍♀️' : z.type === 'boat' ? '⛵' : '🧟‍♂️';
+      drawEmojiWithHp(emoji, z.x, z.y, z.hp, z.maxHp, z.shake);
+      if (z.shake > 0) z.shake--;
+    });
+
+    drawDamageText();
+    updateProjectiles();
+    shootProjectiles();
+
+    for (let z of zombies) {
+      let target = generator;
+      let tx = generator.x * tileSize + 25;
+      let ty = generator.y * tileSize + 25;
+      for (let b of buildings) {
+        const bx = b.x * tileSize + 25;
+        const by = b.y * tileSize + 25;
+        if (Math.hypot(z.x - bx, z.y - by) < 100) {
+          target = b;
+          tx = bx;
+          ty = by;
+          break;
+        }
+      }
+
+      const dx = tx - z.x;
+      const dy = ty - z.y;
+      const dist = Math.hypot(dx, dy);
+      if (dist > 5) {
+        z.x += dx / dist * z.speed;
+        z.y += dy / dist * z.speed;
+      } else {
+        const now = Date.now();
+        if (now - z.lastAttack >= 1000) {
+          z.lastAttack = now;
+          target.hp -= 10;
+          damageIndicators.push({ text: '🩸-10', x: z.x, y: z.y, life: 30, type: 'hit' });
+        }
+      }
+    }
+
+    document.getElementById('coinCount').textContent = Math.floor(coins);
+document.getElementById('maxCoinCount').textContent = maxCoins;
+
+
+    zombies = zombies.filter(z => z.hp > 0);
+    buildings = buildings.filter(b => b.hp > 0);
+
+    const bankCount = buildings.filter(b => b.type === 'bank').length;
+maxCoins = 300 + bankCount * 100;
+
+if (coins > maxCoins) coins = maxCoins;
+
+
+    if (!intermission && zombieQueue.length > 0 && spawnCooldown <= 0) {
+      spawnZombieFromQueue();
+      spawnCooldown = 3000;
+    } else {
+      spawnCooldown -= 16;
+    }
+
+    if (!intermission && zombieQueue.length === 0 && zombies.length === 0) {
+      intermission = true;
+      intermissionTimer = 5000;
+      document.getElementById('intermissionMessage').textContent = `✅ Day ${day} cleared! Next wave in 5s...`;
+    }
+
+    if (intermission) {
+      intermissionTimer -= 16;
+      if (intermissionTimer <= 0) {
+        intermission = false;
+        day++;
+        queueZombiesForDay(day);
+        document.getElementById('intermissionMessage').textContent = '';
+        saveGame();
+      }
+    }
+
+    document.getElementById('coinCount').textContent = Math.floor(coins);
+    document.getElementById('dayCount').textContent = day;
+
+    ctx.restore();
+    requestAnimationFrame(gameLoop);
+  }
+
+  loadGame();
+  queueZombiesForDay(day);
+  gameLoop();
+</script>
+</html>
